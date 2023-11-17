@@ -17,7 +17,6 @@ const (
 	readFirstSegStep    = stepEnum(0)
 	readFileContentStep = stepEnum(1)
 	readLastSegStep     = stepEnum(2)
-	readFinish          = stepEnum(-1)
 )
 
 var LoggerFunc func(traceId string, message string)
@@ -160,12 +159,16 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 		}
 		if gotLen < bufLen {
 			if DebugMode && LoggerFunc != nil {
-				LoggerFunc(sup.traceId, fmt.Sprintf("buff is not fill, finish all read, got size:%d,step %d", gotLen, sup.step))
+				LoggerFunc(sup.traceId, fmt.Sprintf("buff is not fill, finish all read, got size:%d,step %d, this body size:%d,file size:%d", gotLen, sup.step, sup.outLen, sup.outFileLen))
 			}
 			return gotLen, io.EOF
 		}
 		if DebugMode && LoggerFunc != nil {
-			LoggerFunc(sup.traceId, fmt.Sprintf("got size:%d,step %d,err:%v", gotLen, sup.step, err))
+			if err == io.EOF {
+				LoggerFunc(sup.traceId, fmt.Sprintf("finish all read,got size:%d,step %d,this body size:%d,file size:%d", gotLen, sup.step, sup.outLen, sup.outFileLen))
+			} else {
+				LoggerFunc(sup.traceId, fmt.Sprintf("got size:%d,step %d,err:%v", gotLen, sup.step, err))
+			}
 		}
 		return gotLen, err
 	}
