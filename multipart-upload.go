@@ -1,9 +1,9 @@
 package streamupload
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,14 +20,19 @@ const (
 	readFinish          = stepEnum(-1)
 )
 
-const defaultReadBuffSize = 16 * 1024
+var LoggerFunc func(traceId string, message string)
+var DebugMode bool
 
 type streamUpload struct {
-	file       *os.File
-	fileReader *bufio.Reader
-	firstSeg   bytes.Buffer
-	lastSeg    bytes.Buffer
-	step       stepEnum
+	file     *os.File
+	firstSeg bytes.Buffer
+	lastSeg  bytes.Buffer
+	step     stepEnum
+
+	outLen     int
+	outFileLen int
+
+	traceId string
 }
 
 func (sup *streamUpload) Close() error {
@@ -44,7 +49,6 @@ func (sup *streamUpload) addFile(fileParamName string, filename string, fieldPar
 	if sup.file, err = os.Open(filename); err != nil {
 		return "", err
 	}
-	sup.fileReader = bufio.NewReaderSize(sup.file, defaultReadBuffSize)
 	w := multipart.NewWriter(&sup.firstSeg)
 	_, err = w.CreateFormFile(fileParamName, filepath.Base(filename))
 	if err != nil {
@@ -54,9 +58,11 @@ func (sup *streamUpload) addFile(fileParamName string, filename string, fieldPar
 	formDataContentType := w.FormDataContentType()
 	boundary := w.Boundary()
 
-	sup.lastSeg.WriteString("\r\n")
 	w = multipart.NewWriter(&sup.lastSeg)
 	w.SetBoundary(boundary)
+	if len(fieldParams) > 0 {
+		sup.lastSeg.WriteString("\r\n")
+	}
 	for key, val := range fieldParams {
 		err = w.WriteField(key, val)
 		if err != nil {
@@ -65,11 +71,18 @@ func (sup *streamUpload) addFile(fileParamName string, filename string, fieldPar
 		}
 	}
 	w.Close()
+	if LoggerFunc != nil {
+		msg := fmt.Sprintf("last:%s", sup.lastSeg.String())
+		LoggerFunc(sup.traceId, msg)
+	}
 	return formDataContentType, err
 }
 
 func (sup *streamUpload) Read(p []byte) (n int, err error) {
 	bufLen := len(p)
+	if DebugMode && LoggerFunc != nil {
+		LoggerFunc(sup.traceId, fmt.Sprintf("read buff size:%d", bufLen))
+	}
 	gotLen := 0
 	buff := p
 	if sup.step == readFirstSegStep {
@@ -80,11 +93,17 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 		if n > 0 {
 			gotLen += n
 			if gotLen == bufLen {
+				if DebugMode && LoggerFunc != nil {
+					LoggerFunc(sup.traceId, fmt.Sprintf("read data size:%d,step %d", gotLen, sup.step))
+				}
 				return gotLen, nil
 			}
 			sup.step = readFileContentStep
 		} else {
 			sup.step = readFileContentStep
+		}
+		if DebugMode && LoggerFunc != nil {
+			LoggerFunc(sup.traceId, fmt.Sprintf("buff is not full,next to read file:%d", gotLen))
 		}
 	}
 
@@ -92,19 +111,38 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 		buff = p[gotLen:bufLen]
 	}
 	if sup.step == readFileContentStep {
-		n, err = sup.fileReader.Read(buff)
-		if err != nil && err != io.EOF {
-			return 0, err
-		}
-		if n > 0 {
-			gotLen += n
-			if gotLen == bufLen {
-				return gotLen, nil
+		for {
+			n, err = sup.file.Read(buff)
+			if err != nil && err != io.EOF {
+				return 0, err
 			}
-			sup.step = readLastSegStep
+			if n > 0 {
+				gotLen += n
+				sup.outFileLen += n
+				buff = p[gotLen:bufLen]
+			}
+
+			if DebugMode && LoggerFunc != nil {
+				LoggerFunc(sup.traceId, fmt.Sprintf("read data %d,and buff remain:%d,continue", n, bufLen-gotLen))
+			}
+
+			if err == io.EOF {
+				if DebugMode && LoggerFunc != nil {
+					LoggerFunc(sup.traceId, fmt.Sprintf("finish read file,this time got len %d,and buff remain:%d", n, bufLen-gotLen))
+				}
+				sup.step = readLastSegStep
+				break
+			}
+			if gotLen == bufLen {
+				break
+			}
 		}
-		if err == io.EOF || n == 0 {
-			sup.step = readLastSegStep
+
+		if gotLen == bufLen {
+			if DebugMode && LoggerFunc != nil {
+				LoggerFunc(sup.traceId, fmt.Sprintf("read data size:%d,step %d", gotLen, sup.step))
+			}
+			return gotLen, err
 		}
 	}
 
@@ -114,28 +152,34 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 
 	if sup.step == readLastSegStep {
 		n, err = sup.lastSeg.Read(buff)
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return n, err
 		}
 		if n > 0 {
 			gotLen += n
-			if gotLen < bufLen {
-				sup.step = readFinish
-				return gotLen, io.EOF
-			}
-			return gotLen, nil
-		} else {
-			sup.step = readFinish
 		}
+		if gotLen < bufLen {
+			if DebugMode && LoggerFunc != nil {
+				LoggerFunc(sup.traceId, fmt.Sprintf("buff is not fill, finish all read, got size:%d,step %d", gotLen, sup.step))
+			}
+			return gotLen, io.EOF
+		}
+		if DebugMode && LoggerFunc != nil {
+			LoggerFunc(sup.traceId, fmt.Sprintf("got size:%d,step %d,err:%v", gotLen, sup.step, err))
+		}
+		return gotLen, err
 	}
-	if sup.step == readFinish {
-		return 0, io.EOF
+	if DebugMode && LoggerFunc != nil {
+		LoggerFunc(sup.traceId, "met error")
 	}
 	return 0, errors.New("met error")
 }
 
-func NewStreamFileUploadBody(fileParamName string, filename string, fieldParams map[string]string) (body io.ReadCloser, contentType string, err error) {
-	up := &streamUpload{}
+func NewStreamFileUploadBody(traceId, fileParamName string, filename string, fieldParams map[string]string) (body io.ReadCloser, contentType string, err error) {
+	up := &streamUpload{
+		traceId: traceId,
+	}
+
 	contentType, err = up.addFile(fileParamName, filename, fieldParams)
 	if err != nil {
 		return nil, "", err
@@ -143,8 +187,8 @@ func NewStreamFileUploadBody(fileParamName string, filename string, fieldParams 
 	return up, contentType, nil
 }
 
-func NewFileUploadRequest(uri string, fieldParams map[string]string, fileParamName, filename string) (*http.Request, error) {
-	body, contextType, err := NewStreamFileUploadBody(fileParamName, filename, fieldParams)
+func NewFileUploadRequest(uri string, fieldParams map[string]string, fileParamName, filename string, traceId string) (*http.Request, error) {
+	body, contextType, err := NewStreamFileUploadBody(traceId, fileParamName, filename, fieldParams)
 	if err != nil {
 		return nil, err
 	}
