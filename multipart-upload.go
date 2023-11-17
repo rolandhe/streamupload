@@ -95,6 +95,7 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 				if DebugMode && LoggerFunc != nil {
 					LoggerFunc(sup.traceId, fmt.Sprintf("read data size:%d,step %d", gotLen, sup.step))
 				}
+				sup.outLen += gotLen
 				return gotLen, nil
 			}
 			sup.step = readFileContentStep
@@ -102,7 +103,7 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 			sup.step = readFileContentStep
 		}
 		if DebugMode && LoggerFunc != nil {
-			LoggerFunc(sup.traceId, fmt.Sprintf("buff is not full,next to read file:%d", gotLen))
+			LoggerFunc(sup.traceId, fmt.Sprintf("buff is not full:%d,next to read file", gotLen))
 		}
 	}
 
@@ -121,10 +122,6 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 				buff = p[gotLen:bufLen]
 			}
 
-			if DebugMode && LoggerFunc != nil {
-				LoggerFunc(sup.traceId, fmt.Sprintf("read data %d,and buff remain:%d,continue", n, bufLen-gotLen))
-			}
-
 			if err == io.EOF {
 				if DebugMode && LoggerFunc != nil {
 					LoggerFunc(sup.traceId, fmt.Sprintf("finish read file,this time got len %d,and buff remain:%d", n, bufLen-gotLen))
@@ -133,15 +130,15 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 				break
 			}
 			if gotLen == bufLen {
-				break
+				if DebugMode && LoggerFunc != nil {
+					LoggerFunc(sup.traceId, fmt.Sprintf("return data to http size:%d,step %d,this time read %d", gotLen, sup.step, n))
+				}
+				sup.outLen += gotLen
+				return gotLen, err
 			}
-		}
-
-		if gotLen == bufLen {
 			if DebugMode && LoggerFunc != nil {
-				LoggerFunc(sup.traceId, fmt.Sprintf("read data size:%d,step %d", gotLen, sup.step))
+				LoggerFunc(sup.traceId, fmt.Sprintf("got file data %d,and buff remain:%d", n, bufLen-gotLen))
 			}
-			return gotLen, err
 		}
 	}
 
@@ -159,17 +156,19 @@ func (sup *streamUpload) Read(p []byte) (n int, err error) {
 		}
 		if gotLen < bufLen {
 			if DebugMode && LoggerFunc != nil {
-				LoggerFunc(sup.traceId, fmt.Sprintf("buff is not fill, finish all read, got size:%d,step %d, this body size:%d,file size:%d", gotLen, sup.step, sup.outLen, sup.outFileLen))
+				LoggerFunc(sup.traceId, fmt.Sprintf("buff is not fill, finish all read, return http size:%d,this time read %d,step %d, body size:%d,file size:%d", gotLen, n, sup.step, sup.outLen, sup.outFileLen))
 			}
+			sup.outLen += gotLen
 			return gotLen, io.EOF
 		}
 		if DebugMode && LoggerFunc != nil {
 			if err == io.EOF {
-				LoggerFunc(sup.traceId, fmt.Sprintf("finish all read,got size:%d,step %d,this body size:%d,file size:%d", gotLen, sup.step, sup.outLen, sup.outFileLen))
+				LoggerFunc(sup.traceId, fmt.Sprintf("finish all read,return http size:%d,this time read %d,step %d,body size:%d,file size:%d", gotLen, n, sup.step, sup.outLen, sup.outFileLen))
 			} else {
-				LoggerFunc(sup.traceId, fmt.Sprintf("got size:%d,step %d,err:%v", gotLen, sup.step, err))
+				LoggerFunc(sup.traceId, fmt.Sprintf("return data to http size:%d,this time read %d,step %d,err:%v", gotLen, n, sup.step, err))
 			}
 		}
+		sup.outLen += gotLen
 		return gotLen, err
 	}
 	if DebugMode && LoggerFunc != nil {
